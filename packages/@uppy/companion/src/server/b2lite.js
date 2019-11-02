@@ -111,6 +111,15 @@ module.exports = class B2Lite {
     }))
   }
 
+  // { bucketId, fileId, partSha1Array }
+  finishLargeFile (params) {
+    return this.apiRequest('b2_finish_large_file', (auth) => ({
+      method: 'POST',
+      json: true,
+      body: params
+    }))
+  }
+
   // { bucketId }
   getBucketId (params) {
     return this.apiRequest('b2_list_buckets', (auth) => ({
@@ -135,6 +144,17 @@ module.exports = class B2Lite {
       json: true,
       body: {
         accountId: auth.accountId,
+        ...params
+      }
+    }))
+  }
+
+  updateBucket (params) {
+    return this.apiRequest('b2_update_bucket', ({ accountId }) => ({
+      method: 'POST',
+      json: true,
+      body: {
+        accountId,
         ...params
       }
     }))

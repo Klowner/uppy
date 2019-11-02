@@ -1,8 +1,6 @@
 const router = require('express').Router
 // const ms = require('ms')
 
-const MAX_ENDPOINTS_PER_FILE = 5
-
 module.exports = function b2 (config) {
   if (typeof config.getPath !== 'function') {
     throw new TypeError('b2: the `getPath` option must be a function')
@@ -96,13 +94,39 @@ module.exports = function b2 (config) {
       .catch(err => next(err))
   }
 
+  function getBucketInfo (req, res, next) {
+    const client = req.uppy.b2Client
+    client.listBuckets({ bucketName: 'ereloom' })
+      .then(data => res.json(data))
+      .catch(err => next(err))
+  }
+
+  function completeMultipartUpload (req, res, next) {
+    const client = req.uppy.b2Client
+    const { fileId, partSha1Array } = req.body
+
+    if (typeof fileId !== 'string') {
+      return res.status(400).json({ error: 'b2: fileId type must be a string' })
+    }
+
+    if (typeof partSha1Array === 'undefined' || typeof partSha1Array.length !== 'number') {
+      return res.status(400).json({ error: 'b2: partSha1Array array not found' })
+    }
+
+    client.finishLargeFile({ fileId, partSha1Array })
+      .then(data => res.json(data))
+      .catch(err => next(err))
+  }
+
   return router()
     // .get('/large/:bucketName/:uploadId', start_large)
     // .get('/params', getUploadParameters)
+    .get('/bucket', getBucketInfo)
     .post('/multipart', createMultipartUpload)
     .post('/multipart/endpoint', getEndpoint)
     // .get('/multipart/:uploadId', getUploadedParts)
     // .get('/multipart/:uploadId/:partNumber', signPartUpload)
     // .post('/multipart/:uploadId/complete', completeMultipartUpload)
+    .post('/multipart/complete', completeMultipartUpload)
     // .delete('/multipart/:uploadId', abortMultipartUpload)
 }

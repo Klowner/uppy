@@ -1,3 +1,5 @@
+const sha1 = require('js-sha1')
+
 const MB = 1024 * 1024
 
 const defaultOptions = {
@@ -96,15 +98,13 @@ class MultipartUploader {
         const i = part.PartNumber - 1
         this.chunkState[i] = {
           uploaded: part.Size,
-          etag: part.ETag,
           done: true
         }
 
         // Only add if we did not yet know about this part.
         if (!this.parts.some((p) => p.PartNumber === part.PartNumber)) {
           this.parts.push({
-            PartNumber: part.PartNumber,
-            ETag: part.ETag
+            PartNumber: part.PartNumber
           })
         }
       })
@@ -120,6 +120,7 @@ class MultipartUploader {
     const need = this.options.limit - this.uploading.length
     if (need === 0) return
 
+    console.log('NEED', need)
     // All parts are uploaded.
     if (this.chunkState.every((state) => state.done)) {
       this._completeUpload()
@@ -143,17 +144,21 @@ class MultipartUploader {
   }
 
   _uploadPart (index) {
-    const body = this.chunks[index]
-    console.log('UPLOAD PART', index)
     this.chunkState[index].busy = true
 
-    return Promise.resolve().then(() =>
-      this._endpointAcquire()
-    ).then((endpoint) => {
-      this._uploadPartBytes(index, endpoint)
-    }, (err) => {
-      this._onError(err)
-    })
+    // Ensure the sha1 has been calculated for this part
+    if (typeof this.chunkState[index].sha1 === 'undefined') {
+      this.chunkState[index].sha1 = this._getPartSha1Sum(index)
+    }
+
+    return Promise.all([
+      this._endpointAcquire(),
+      this.chunkState[index].sha1
+    ]).then(
+      ([endpoint, sha1]) =>
+        this._uploadPartBytes(index, endpoint, sha1),
+      (err) => this._onError(err)
+    )
   }
 
   _uploadPart2 (index) {
@@ -188,13 +193,11 @@ class MultipartUploader {
     this.options.onProgress(totalUploaded, this.file.size)
   }
 
-  _onPartComplete (index, etag) {
-    this.chunkState[index].etag = etag
+  _onPartComplete (index) {
     this.chunkState[index].done = true
 
     const part = {
-      PartNumber: index + 1,
-      ETag: etag
+      PartNumber: index + 1
     }
     this.parts.push(part)
 
@@ -203,16 +206,25 @@ class MultipartUploader {
     this._uploadParts()
   }
 
-  _uploadPartBytes (index, endpoint) {
+  _getPartSha1Sum (index) {
+    const body = this.chunks[index]
+    return body.arrayBuffer()
+      .then(buffer => sha1(buffer))
+      .then(sha1sum => (this.chunkState[index].sha1 = sha1sum))
+  }
+
+  _uploadPartBytes (index, endpoint, sha1) {
     const body = this.chunks[index]
     const xhr = new XMLHttpRequest()
     xhr.open('POST', endpoint.uploadUrl, true)
     xhr.responseType = 'json'
     xhr.setRequestHeader('Authorization', endpoint.authorizationToken)
-    xhr.setRequestHeader('X-Bz-Part-Number', index)
+    xhr.setRequestHeader('X-Bz-Part-Number', index + 1)
+    xhr.setRequestHeader('X-Bz-Content-Sha1', sha1)
     xhr.setRequestHeader('Content-Length', body.size)
     this.uploading.push(xhr)
 
+    console.log('ep', endpoint)
     xhr.upload.addEventListener('progress', (ev) => {
       if (!ev.lengthComputable) return
       this._onPartProgress(index, ev.loaded, ev.total)
@@ -236,14 +248,14 @@ class MultipartUploader {
       this._onPartProgress(index, body.size, body.size)
 
       // NOTE This must be allowed by CORS.
-      const etag = ev.target.getResponseHeader('ETag')
-      if (etag === null) {
-        this._onError(new Error('AwsS3/Multipart: Could not read the ETag header. This likely means CORS is not configured correctly on the S3 Bucket. Seee https://uppy.io/docs/aws-s3-multipart#S3-Bucket-Configuration for instructions.'))
-        return
-      }
+      // const etag = ev.target.getResponseHeader('ETag')
+      // if (etag === null) {
+      //   this._onError(new Error('AwsS3/Multipart: Could not read the ETag header. This likely means CORS is not configured correctly on the S3 Bucket. Seee https://uppy.io/docs/aws-s3-multipart#S3-Bucket-Configuration for instructions.'))
+      //   return
+      // }
 
       this._endpointRelease(endpoint)
-      this._onPartComplete(index, etag)
+      this._onPartComplete(index)
     })
 
     xhr.addEventListener('error', (ev) => {
@@ -255,7 +267,6 @@ class MultipartUploader {
       this._onError(error)
     })
 
-    console.log(body)
     xhr.send(body)
   }
 
@@ -315,11 +326,17 @@ class MultipartUploader {
     // Parts may not have completed uploading in sorted order, if limit > 1.
     this.parts.sort((a, b) => a.PartNumber - b.PartNumber)
 
-    return Promise.resolve().then(() =>
+    // Build part sha1 checksum array
+    const sha1Sums = Promise.all(
+      this.chunkState
+        .map(chunkState => chunkState.sha1)
+    )
+
+    sha1Sums.then((partSha1Array) =>
       this.options.completeMultipartUpload({
-        key: this.key,
-        uploadId: this.uploadId,
-        parts: this.parts
+        fileId: this.fileId,
+        parts: this.parts,
+        partSha1Array
       })
     ).then((result) => {
       this.options.onSuccess(result)

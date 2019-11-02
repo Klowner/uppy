@@ -117,7 +117,13 @@ module.exports = class BackblazeB2Multipart extends Plugin {
   //     //   .then(assertServerError)
   //   }
 
-  completeMultipartUpload (file, { key, uploadId, parts }) {
+  completeMultipartUpload (file, { fileId, parts, partSha1Array }) {
+    this.assertHost()
+    return this.client.post('b2/multipart/complete', { fileId, partSha1Array })
+      .then(assertServerError)
+  }
+
+  completeMultipartUpload2 (file, { key, uploadId, parts }) {
     this.assertHost()
 
     const filename = encodeURIComponent(key)
