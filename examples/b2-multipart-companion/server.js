@@ -23,11 +23,7 @@ const options = {
       secret: process.env.COMPANION_GOOGLE_SECRET || process.env.UPPYSERVER_GOOGLE_SECRET
     },
     b2: {
-      getPath: (req, filename) => {
-        const path = `${Math.random().toString(32).slice(2)}/${filename}`
-        console.log(path)
-        return path
-      },
+      getPath: (req, filename) => `${Math.random().toString(32).slice(2)}/${filename}`,
       applicationKey: process.env.COMPANION_B2_KEY || process.env.UPPYSERVER_B2_KEY,
       applicationKeyId: process.env.COMPANION_B2_KEY_ID || process.env.UPPYSERVER_B2_KEY_ID,
       bucket: process.env.COMPANION_B2_BUCKET || process.env.UPPYSERVER_B2_BUCKET
