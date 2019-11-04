@@ -1,26 +1,10 @@
 const router = require('express').Router
-// const ms = require('ms')
+const ms = require('ms')
 
 module.exports = function b2 (config) {
   if (typeof config.getPath !== 'function') {
     throw new TypeError('b2: the `getPath` option must be a function')
   }
-
-  /*
-  function getUploadParameters (req, res, next) {
-    const client = req.uppy.b2Client
-    const key = config.getKey(req, req.query.filename)
-    if (typeof key !== 'string') {
-      return res.status(500).json({ error: 's3: filename returned from `getKey` must be a string' })
-    }
-    const fields = {
-      // keyId: keyId,
-      key: key,
-      success_action_status: '201',
-      'content-type': req.query.type
-    }
-  }
-*/
 
   const getCachedBucketID = (() => {
     const cache = Object.create({})
@@ -31,7 +15,7 @@ module.exports = function b2 (config) {
       } else {
         return (cache[bucketName] = {
           result: client.getBucketId({ bucketName }),
-          expiration: Date.now() + (config.cacheBucketIdDurationMS || 3600)
+          expiration: Date.now() + (config.cacheBucketIdDurationMS || ms('30m'))
         }).result
       }
     }
@@ -79,11 +63,24 @@ module.exports = function b2 (config) {
   }
 
   /**
+   * Obtain an authorization token and destination URL to
+   * post upload data to.
    *
+   * Expected JSON body:
+   *  - fileId - The B2 fileId we would like to obtain an
+   *    upload destination for.
+   *
+   * Response JSON:
+   *  - fileId - The unique fileId of file being uploaded
+   *    (should be same as passed-in fileId)
+   *  - uploadUrl - The Backblaze URL which we'll send file
+   *    parts to
+   *  - authorizationToken - Auth token for uploading to the
+   *    aforementioned uploadUrl.
    */
   function getEndpoint (req, res, next) {
     const client = req.uppy.b2Client
-    const { fileId } = req.body
+    const { fileId } = req.params
 
     if (typeof fileId !== 'string') {
       return res.status(400).json({ error: 'b2: fileId type must be a string' })
@@ -94,16 +91,22 @@ module.exports = function b2 (config) {
       .catch(err => next(err))
   }
 
-  function getBucketInfo (req, res, next) {
-    const client = req.uppy.b2Client
-    client.listBuckets({ bucketName: 'ereloom' })
-      .then(data => res.json(data))
-      .catch(err => next(err))
-  }
-
+  /**
+   * Finish off a multipart upload.
+   *
+   * Expected JSON body:
+   *  - fileId - The unique fileId of the file being uploaded
+   *  - partSha1Array - An array containing the hex digests of
+   *    each of the uploaded parts (in order). This is used on
+   *    the receiving end to verify the integrity of the upload.
+   *
+   * Response JSON:
+   *  see https://www.backblaze.com/b2/docs/b2_finish_large_file.html
+   */
   function completeMultipartUpload (req, res, next) {
     const client = req.uppy.b2Client
-    const { fileId, partSha1Array } = req.body
+    const { partSha1Array } = req.body
+    const { fileId } = req.params
 
     if (typeof fileId !== 'string') {
       return res.status(400).json({ error: 'b2: fileId type must be a string' })
@@ -119,14 +122,9 @@ module.exports = function b2 (config) {
   }
 
   return router()
-    // .get('/large/:bucketName/:uploadId', start_large)
-    // .get('/params', getUploadParameters)
-    .get('/bucket', getBucketInfo)
     .post('/multipart', createMultipartUpload)
-    .post('/multipart/endpoint', getEndpoint)
+    .post('/multipart/:fileId', getEndpoint)
     // .get('/multipart/:uploadId', getUploadedParts)
-    // .get('/multipart/:uploadId/:partNumber', signPartUpload)
-    // .post('/multipart/:uploadId/complete', completeMultipartUpload)
-    .post('/multipart/complete', completeMultipartUpload)
+    .post('/multipart/:fileId/complete', completeMultipartUpload)
     // .delete('/multipart/:uploadId', abortMultipartUpload)
 }

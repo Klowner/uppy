@@ -2,15 +2,14 @@ const request = require('request')
 
 const B2_API_VERSION = 2
 const B2_API_URL = `https://api.backblazeb2.com/b2api/v${B2_API_VERSION}/`
-// request.debug = true
 
 module.exports = class B2Lite {
   constructor (options) {
-    // TODO - REMOVE THIS
-    this.applicationKeyId = options.applicationKeyId || '001eb6407e78f8b0000000002'
-    this.applicationKey = options.applicationKey || 'K001w5txG3p46rQmvQrQWIIXRPAgGuE'
+    this.applicationKeyId = options.credentials.applicationKeyId
+    this.applicationKey = options.credentials.applicationKey
 
-    this.retries = 3
+    this.retries = 3 // TODO
+
     // This will be populated after a successful authorization
     this.auth = {}
   }
@@ -88,45 +87,36 @@ module.exports = class B2Lite {
           }
         })
       }))
-      // .catch((err) => {
-      //   if (err.status === 401) {
-      //     if (typeof ttl === 'undefined') {
-      //       ttl = this.retries
-      //     }
-      //     return this.apiRequest(action, params, ttl - 1)
-      //   }
-      //   throw err
-      // })
   }
 
-  // { bucketId, fileName, contentType }
+  // { bucketId, fileName, contentType (optional) }
   startLargeFile (params) {
-    return this.apiRequest('b2_start_large_file', (auth) => ({
+    return this.apiRequest('b2_start_large_file', {
       method: 'POST',
       json: true,
       body: {
         contentType: 'b2/x-auto',
         ...params
       }
-    }))
+    })
   }
 
   // { bucketId, fileId, partSha1Array }
   finishLargeFile (params) {
-    return this.apiRequest('b2_finish_large_file', (auth) => ({
+    return this.apiRequest('b2_finish_large_file', {
       method: 'POST',
       json: true,
       body: params
-    }))
+    })
   }
 
   // { bucketId }
   getBucketId (params) {
-    return this.apiRequest('b2_list_buckets', (auth) => ({
+    return this.apiRequest('b2_list_buckets', ({ accountId }) => ({
       method: 'POST',
       json: true,
       body: {
-        accountId: auth.accountId,
+        accountId,
         bucketName: params.bucketName
       }
     })).then(response => {
@@ -139,18 +129,7 @@ module.exports = class B2Lite {
 
   // { bucketName (optional), bucketTypes (optional)
   listBuckets (params) {
-    return this.apiRequest('b2_list_buckets', (auth) => ({
-      method: 'POST',
-      json: true,
-      body: {
-        accountId: auth.accountId,
-        ...params
-      }
-    }))
-  }
-
-  updateBucket (params) {
-    return this.apiRequest('b2_update_bucket', ({ accountId }) => ({
+    return this.apiRequest('b2_list_buckets', ({ accountId }) => ({
       method: 'POST',
       json: true,
       body: {
@@ -158,6 +137,15 @@ module.exports = class B2Lite {
         ...params
       }
     }))
+  }
+
+  // { fileId, startPartNumber (optional), maxPartCount (optional) }
+  listParts (params) {
+    return this.apiRequest('b2_list_parts', {
+      method: 'POST',
+      json: true,
+      body: params
+    })
   }
 
   // { fileId }

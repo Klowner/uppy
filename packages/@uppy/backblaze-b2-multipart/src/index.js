@@ -95,10 +95,12 @@ module.exports = class BackblazeB2Multipart extends Plugin {
 
   getEndpoint (file, fileId) {
     this.assertHost()
-    return this.client.post('b2/multipart/endpoint', { fileId })
+
+    return this.client.post(`b2/multipart/${fileId}`)
       .then(assertServerError)
   }
 
+  // TODO
   listParts (file, { key, uploadId }) {
     this.assertHost()
 
@@ -119,19 +121,12 @@ module.exports = class BackblazeB2Multipart extends Plugin {
 
   completeMultipartUpload (file, { fileId, parts, partSha1Array }) {
     this.assertHost()
-    return this.client.post('b2/multipart/complete', { fileId, partSha1Array })
+
+    return this.client.post(`b2/multipart/${fileId}/complete`, { partSha1Array })
       .then(assertServerError)
   }
 
-  completeMultipartUpload2 (file, { key, uploadId, parts }) {
-    this.assertHost()
-
-    const filename = encodeURIComponent(key)
-    const uploadIdEnc = encodeURIComponent(uploadId)
-    return this.client.post(`b2/multipart/${uploadIdEnc}/complete?key=${filename}`, { parts })
-      .then(assertServerError)
-  }
-
+  // TODO
   abortMultipartUpload (file, { key, uploadId }) {
     this.assertHost()
 

@@ -232,7 +232,6 @@ const getOptionsMiddleware = (options) => {
     })
   }
 
-  console.log(options.providerOptions)
   let b2Client = null
   if (options.providerOptions.b2) {
     const config = options.providerOptions.b2
