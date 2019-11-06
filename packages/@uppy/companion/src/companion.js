@@ -235,17 +235,14 @@ const getOptionsMiddleware = (options) => {
   let b2Client = null
   if (options.providerOptions.b2) {
     const config = options.providerOptions.b2
-    let credentials
-    if (config.applicationKeyId && config.applicationKey) {
-      const { applicationKeyId, applicationKey } = config
-      credentials = {
-        applicationKeyId,
-        applicationKey
-      }
-      b2Client = new B2Lite({
-        credentials
-      })
+    const { applicationKeyId, applicationKey } = config
+    const credentials = {
+      applicationKeyId,
+      applicationKey
     }
+    b2Client = new B2Lite({
+      credentials
+    })
   }
 
   /**

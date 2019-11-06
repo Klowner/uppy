@@ -156,4 +156,16 @@ module.exports = class B2Lite {
       body: params
     })
   }
+
+  // { bucketId }
+  getUploadURL (params) {
+    return this.apiRequest('b2_get_upload_url', {
+      method: 'POST',
+      json: true,
+      body: params
+    }).then(response => {
+      console.log('upload url response', response)
+      return response
+    })
+  }
 }

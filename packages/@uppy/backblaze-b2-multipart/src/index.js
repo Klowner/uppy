@@ -4,7 +4,7 @@ const EventTracker = require('@uppy/utils/lib/EventTracker')
 const emitSocketProgress = require('@uppy/utils/lib/emitSocketProgress')
 const getSocketHost = require('@uppy/utils/lib/getSocketHost')
 const RateLimitedQueue = require('@uppy/utils/lib/RateLimitedQueue')
-const Uploader = require('./MultipartUploader')
+const Uploader = require('./B2Uploader')
 
 function assertServerError (res) {
   if (res && res.error) {
@@ -24,6 +24,7 @@ module.exports = class BackblazeB2Multipart extends Plugin {
     this.id = this.opts.id || 'BackblazeB2Multipart'
     this.title = 'Backblaze B2 Multipart'
     this.client = new RequestClient(uppy, opts)
+    this.sharedEndpointPool = []
 
     const defaultOptions = {
       timeout: 30 * 1000,
@@ -96,28 +97,20 @@ module.exports = class BackblazeB2Multipart extends Plugin {
   getEndpoint (file, fileId) {
     this.assertHost()
 
-    return this.client.post(`b2/multipart/${fileId}`)
-      .then(assertServerError)
+    return (fileId
+      ? this.client.post(`b2/multipart/${fileId}`)
+      : this.client.post('b2/upload')
+    ).then(assertServerError)
   }
 
-  // TODO
-  listParts (file, { key, uploadId }) {
+  listParts (file, { fileId }) {
     this.assertHost()
 
-    const filename = encodeURIComponent(key)
-    return this.client.get(`b2/multipart/${uploadId}?key=${filename}`)
+    // TODO -- generator/iterable thing for >1000 part uploads?
+    console.log('listing parts', file, fileId)
+    return this.client.get(`b2/multipart/${fileId}`)
       .then(assertServerError)
   }
-
-  //   // prepareUploadPart (file, { key, uploadId, number }) {
-  //   prepareUploadPart (file, params) {
-  //     this.assertHost()
-
-  //     console.log('CALLING PREPARE UPLOAD PART', params)
-  //     // const filename = encodeURIComponent(key)
-  //     // return this.client.get(`b2/multipart/${uploadId}/${number}?key=${filename}`)
-  //     //   .then(assertServerError)
-  //   }
 
   completeMultipartUpload (file, { fileId, parts, partSha1Array }) {
     this.assertHost()
@@ -126,13 +119,10 @@ module.exports = class BackblazeB2Multipart extends Plugin {
       .then(assertServerError)
   }
 
-  // TODO
-  abortMultipartUpload (file, { key, uploadId }) {
+  abortMultipartUpload (file, { fileId }) {
     this.assertHost()
 
-    const filename = encodeURIComponent(key)
-    const uploadIdEnc = encodeURIComponent(uploadId)
-    return this.client.delete(`b2/multipart/${uploadIdEnc}?key=${filename}`)
+    return this.client.delete(`b2/multipart/${fileId}`)
       .then(assertServerError)
   }
 
@@ -140,11 +130,12 @@ module.exports = class BackblazeB2Multipart extends Plugin {
     return new Promise((resolve, reject) => {
       const onStart = (data) => {
         const cFile = this.uppy.getFile(file.id)
+
         this.uppy.setFileState(file.id, {
           b2Multipart: {
             ...cFile.b2Multipart,
-            key: data.key,
-            uploadId: data.uploadId,
+            fileId: data.fileId,
+            isMultiPart: data.isMultiPart || false,
             parts: []
           }
         })
@@ -169,8 +160,9 @@ module.exports = class BackblazeB2Multipart extends Plugin {
       }
 
       const onSuccess = (result) => {
+        console.log('RESULT', result)
         const uploadResp = {
-          uploadURL: result.location
+          fileId: result.fileId || this.fileId
         }
 
         queuedRequest.done()
@@ -219,6 +211,7 @@ module.exports = class BackblazeB2Multipart extends Plugin {
         onSuccess,
         onPartComplete,
 
+        sharedEndpointPool: this.sharedEndpointPool,
         limit: this.opts.limit || 5,
         ...file.b2Multipart
       })

@@ -91,6 +91,19 @@ module.exports = function b2 (config) {
       .catch(err => next(err))
   }
 
+  function getEndpointSmall (req, res, next) {
+    const client = req.uppy.b2Client
+
+    return getCachedBucketID(client, config.bucket)
+      .then(bucketId =>
+        client.getUploadURL({
+          bucketId
+        }).then(data =>
+          res.json(data)
+        ).catch(err => next(err))
+      )
+  }
+
   /**
    * Finish off a multipart upload.
    *
@@ -122,6 +135,7 @@ module.exports = function b2 (config) {
   }
 
   return router()
+    .post('/upload', getEndpointSmall)
     .post('/multipart', createMultipartUpload)
     .post('/multipart/:fileId', getEndpoint)
     // .get('/multipart/:uploadId', getUploadedParts)
