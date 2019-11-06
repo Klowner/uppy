@@ -6,7 +6,7 @@ const providerManager = require('./server/provider')
 const controllers = require('./server/controllers')
 const s3 = require('./server/controllers/s3')
 const b2 = require('./server/controllers/b2')
-const B2Lite = require('./server/b2lite')
+const B2Client = require('./server/b2')
 const url = require('./server/controllers/url')
 const SocketServer = require('ws').Server
 const emitter = require('./server/emitter')
@@ -240,7 +240,7 @@ const getOptionsMiddleware = (options) => {
       applicationKeyId,
       applicationKey
     }
-    b2Client = new B2Lite({
+    b2Client = new B2Client({
       credentials
     })
   }

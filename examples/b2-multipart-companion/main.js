@@ -17,3 +17,7 @@ uppy.use(Dashboard, {
 uppy.use(BackblazeB2Multipart, {
   companionUrl: 'http://localhost:3020'
 })
+
+uppy.on('upload-success', function (file, response) {
+  console.log('uploaded', file, response)
+})

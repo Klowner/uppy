@@ -3,7 +3,7 @@ const request = require('request')
 const B2_API_VERSION = 2
 const B2_API_URL = `https://api.backblazeb2.com/b2api/v${B2_API_VERSION}/`
 
-module.exports = class B2Lite {
+module.exports = class B2Client {
   constructor (options) {
     this.applicationKeyId = options.credentials.applicationKeyId
     this.applicationKey = options.credentials.applicationKey
@@ -22,7 +22,7 @@ module.exports = class B2Lite {
   }
 
   /**
-   * Request new authorization key from Backblaze.
+   * Request new authorization token from Backblaze.
    */
   authorize () {
     return this._authorizing || (this._authorizing = new Promise((resolve, reject) => {
@@ -67,7 +67,7 @@ module.exports = class B2Lite {
     )
   }
 
-  apiRequest (action, params, ttl) {
+  apiRequest (action, params, retries = 5) {
     return this._getPreauthorizedRequest()
       .then((request) => new Promise((resolve, reject) => {
         const url = this.getURL(action)
@@ -77,12 +77,21 @@ module.exports = class B2Lite {
           params = params(this.auth, this)
         }
 
-        request(url, params, (err, res, body) => {
+        const requestParams = {
+          json: true,
+          method: 'POST',
+          ...params
+        }
+
+        request(url, requestParams, (err, res, body) => {
           if (err) {
             // TODO -- check for token expirations and retry failures
             console.log('WE GOT AN ERROR', err)
             reject(err)
           } else {
+            if (body && body.status && body.status !== 200) {
+              console.log('encountered error', body)
+            }
             resolve(body)
           }
         })
@@ -92,8 +101,6 @@ module.exports = class B2Lite {
   // { bucketId, fileName, contentType (optional) }
   startLargeFile (params) {
     return this.apiRequest('b2_start_large_file', {
-      method: 'POST',
-      json: true,
       body: {
         contentType: 'b2/x-auto',
         ...params
@@ -104,8 +111,6 @@ module.exports = class B2Lite {
   // { bucketId, fileId, partSha1Array }
   finishLargeFile (params) {
     return this.apiRequest('b2_finish_large_file', {
-      method: 'POST',
-      json: true,
       body: params
     })
   }
@@ -113,8 +118,6 @@ module.exports = class B2Lite {
   // { bucketId }
   getBucketId (params) {
     return this.apiRequest('b2_list_buckets', ({ accountId }) => ({
-      method: 'POST',
-      json: true,
       body: {
         accountId,
         bucketName: params.bucketName
@@ -130,8 +133,6 @@ module.exports = class B2Lite {
   // { bucketName (optional), bucketTypes (optional)
   listBuckets (params) {
     return this.apiRequest('b2_list_buckets', ({ accountId }) => ({
-      method: 'POST',
-      json: true,
       body: {
         accountId,
         ...params
@@ -142,8 +143,6 @@ module.exports = class B2Lite {
   // { fileId, startPartNumber (optional), maxPartCount (optional) }
   listParts (params) {
     return this.apiRequest('b2_list_parts', {
-      method: 'POST',
-      json: true,
       body: params
     })
   }
@@ -151,8 +150,6 @@ module.exports = class B2Lite {
   // { fileId }
   getUploadPartURL (params) {
     return this.apiRequest('b2_get_upload_part_url', {
-      method: 'POST',
-      json: true,
       body: params
     })
   }
@@ -160,12 +157,14 @@ module.exports = class B2Lite {
   // { bucketId }
   getUploadURL (params) {
     return this.apiRequest('b2_get_upload_url', {
-      method: 'POST',
-      json: true,
       body: params
-    }).then(response => {
-      console.log('upload url response', response)
-      return response
+    })
+  }
+
+  // { fileId }
+  cancelLargeFile (params) {
+    return this.apiRequest('b2_cancel_large_file', {
+      body: params
     })
   }
 }

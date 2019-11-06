@@ -104,6 +104,46 @@ module.exports = function b2 (config) {
       )
   }
 
+  function getUploadedParts (req, res, next) {
+    const client = req.uppy.b2Client
+    const { fileId } = req.params
+
+    if (typeof fileId !== 'string') {
+      return res.status(400).json({ error: 'b2: fileId type must be a string' })
+    }
+
+    const fetchParts = (prevParts = [], nextPartNumber) => {
+      const params = {
+        fileId,
+        maxPartCount: 1000
+      }
+      if (nextPartNumber) {
+        params.nextPartNumber = nextPartNumber
+      }
+      return client.listParts(params)
+        .then(response => {
+          const parts = [
+            ...prevParts,
+            ...(response.parts.map(part => ({
+              PartNumber: part.partNumber,
+              Size: part.contentLength
+            }))
+            )
+          ]
+
+          if (response.nextPartNumber) {
+            return fetchParts(parts, response.nextPartNumber)
+          } else {
+            return Promise.resolve(parts)
+          }
+        })
+    }
+
+    fetchParts()
+      .then(parts => res.json({ parts }))
+      .catch(err => next(err))
+  }
+
   /**
    * Finish off a multipart upload.
    *
@@ -134,11 +174,24 @@ module.exports = function b2 (config) {
       .catch(err => next(err))
   }
 
+  function abortMultipartUpload (req, res, next) {
+    const client = req.uppy.b2Client
+    const { fileId } = req.params
+
+    if (typeof fileId !== 'string') {
+      return res.status(400).json({ error: 'b2: fileId type must be a string' })
+    }
+
+    client.cancelLargeFile({ fileId })
+      .then(data => res.json(data))
+      .catch(err => next(err))
+  }
+
   return router()
     .post('/upload', getEndpointSmall)
     .post('/multipart', createMultipartUpload)
     .post('/multipart/:fileId', getEndpoint)
-    // .get('/multipart/:uploadId', getUploadedParts)
+    .get('/multipart/:fileId', getUploadedParts)
     .post('/multipart/:fileId/complete', completeMultipartUpload)
-    // .delete('/multipart/:uploadId', abortMultipartUpload)
+    .delete('/multipart/:fileId', abortMultipartUpload)
 }
