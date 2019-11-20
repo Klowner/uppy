@@ -34,6 +34,9 @@ const defaultOptions = {
       conditions: [],
       useAccelerateEndpoint: false,
       getKey: (req, filename) => filename
+    },
+    b2: {
+      getPath: (req, filename) => filename
     }
   },
   debug: true
