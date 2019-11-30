@@ -496,14 +496,17 @@ class Uploader {
     })
   }
 
-  beginTailReadStream () {
+  beginTailReadStream (end) {
     const file = createTailReadStream(this.path, {
-      tail: true
+      tail: true,
+      end: end
     })
 
     // Close the tailing read stream after downloading
     // the source file is complete.
     this.writeStream.on('finish', () => {
+      console.log('WRITE STREAM FINISHED, CLOSING TAIL')
+      console.log(file.close())
       file.close()
     })
 
@@ -585,7 +588,7 @@ class Uploader {
       path: this.path,
       fileName: options.getPath(null, filename), // destination
       fileSize, // expected final size of the file being transferred
-      stream: this.beginTailReadStream(),
+      stream: this.beginTailReadStream(fileSize),
       endpointPool: this._b2EndpointPool
     })
 

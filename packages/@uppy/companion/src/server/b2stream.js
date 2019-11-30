@@ -57,17 +57,28 @@ module.exports = class B2Stream {
 
     const transmit = largeFile
       .then(data => {
-        return new Promise((resolve, reject) => {
-          const { client, endpointPool, chunkSize, filePath } = data
+        const { stream, path, endpointPool } = this.options
+        const { client } = this
 
+        return new Promise((resolve, reject) => {
           const chunks = []
-          const handleSent = chunk => {
-            chunks[chunk.id] = { hash: chunk.hash }
+          const writerOptions = {
+            client,
+            endpointPool,
+            chunkSize,
+            path,
+            // bucketId: this.options.bucketId,
+            handleSent: chunk => {
+              chunks[chunk.id] = { hash: chunk.hash }
+            }
           }
 
-          this.options.stream
-            .pipe(B2StreamWriter({ client, endpointPool, chunkSize, filePath, handleSent }))
-            .on('end', () => resolve(chunks))
+          stream
+            .pipe(B2StreamWriter(writerOptions))
+            .on('end', () => {
+              // TODO -- verify successful upload!
+              resolve(chunks)
+            })
         })
       })
 
@@ -90,12 +101,41 @@ module.exports = class B2Stream {
     // b2_get_upload_url (bucketId) -> authorizationTokem, url
     // b2_upload_file (authorizationToken, url, hash)
     //
-    console.log('SEND SINGLE')
-    return Promise.resolve({ done: true })
+    // console.log('SEND SINGLE')
+    // return Promise.resolve({ done: true })
+
+    const transmit = new Promise((resolve, reject) => {
+      const { stream, path, endpointPool } = this.options
+      const { client } = this
+      const chunks = []
+
+      const writerOptions = {
+        client,
+        endpointPool,
+        chunkSize,
+        path,
+        handleSent: chunk => {
+          chunks[chunk.id] = { hash: chunk.hash }
+        }
+      }
+
+      try {
+        stream
+          .pipe(B2StreamWriter(writerOptions))
+          .on('end', () => {
+            // TODO -- verify successful upload!
+            resolve(chunks)
+          })
+      } catch (err) {
+        reject(err)
+      }
+    })
+
+    return transmit
   }
 }
 
-function B2StreamWriter ({ client, endpointPool, connections = 5, chunkSize, filePath, handleSent }) {
+function B2StreamWriter ({ client, endpointPool, connections = 5, chunkSize, path, handleSent }) {
   let accum = 0 // total bytes received
   let chunkAccum = 0 // total bytes in the current which have been processed
   // let sentAccum = 0 // total bytes transmitted to Backblaze
@@ -103,7 +143,7 @@ function B2StreamWriter ({ client, endpointPool, connections = 5, chunkSize, fil
 
   // Create a new promise which will resolve to a fd-slicer instance
   const slicer = new Promise((resolve, reject) => {
-    fs.open(filePath, 'r', (err, fd) => {
+    fs.open(path, 'r', (err, fd) => {
       if (err) {
         reject(err)
       }
@@ -136,25 +176,29 @@ function B2StreamWriter ({ client, endpointPool, connections = 5, chunkSize, fil
     chunkAccum = 0
 
     const transmit = new Promise((resolve) => {
+      console.log('requesting slicer')
       slicer.then(({ slicer }) => {
         // Create a new SHA1 hasher
         const hasher = crypto.createHash('sha1')
         hasher.setEncoding('hex')
 
+        console.log('slicin?', slicer)
         // Create a new read stream for this segment
         // and pipe it to the sha1 hasher.
         slicer.createReadStream({ start, end })
-          .pipe(hasher)
           .on('end', () => {
             hasher.end()
+            console.log('finished hashing chunk', id)
             resolve({
               hash: hasher.read(),
               stream: slicer.createReadStream({ start, end })
             })
           })
+          .pipe(hasher)
       })
     }).then(({ hash, stream }) => {
       if (handleSent) {
+        console.log('transmitted', id, hash)
         handleSent({ id, hash })
       }
     }).then(response => {
@@ -187,10 +231,12 @@ function B2StreamWriter ({ client, endpointPool, connections = 5, chunkSize, fil
         }
       }
 
+      console.log('write', chunk && chunk.length)
       // handle the callback (now or later)
       pendingWriteHandler(cb)
     },
     final: function (cb) {
+      console.log('final')
       emit(this)
 
       console.log('waiting on workers to complete', workers.length)
