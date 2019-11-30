@@ -3,6 +3,7 @@ const Webcam = require('@uppy/webcam')
 const GoogleDrive = require('@uppy/google-drive')
 const Dashboard = require('@uppy/dashboard')
 const BackblazeB2Multipart = require('@uppy/backblaze-b2-multipart')
+const Url = require('@uppy/url')
 
 const uppy = Uppy({
   debug: true,
@@ -14,6 +15,10 @@ uppy.use(GoogleDrive, {
 })
 uppy.use(BackblazeB2Multipart, {
   companionUrl: 'http://localhost:3020'
+})
+uppy.use(Url, {
+  companionUrl: 'http://localhost:3020',
+  locale: {}
 })
 uppy.use(Dashboard, {
   inline: true,

@@ -33,6 +33,7 @@ class Uploader {
    * @property {string=} fieldname
    * @property {string} pathPrefix
    * @property {any=} s3
+   * @property {any=} b2
    * @property {any} metadata
    * @property {any} uppyOptions
    * @property {any=} storage
@@ -495,18 +496,25 @@ class Uploader {
     })
   }
 
-  /**
-   * Upload the file to S3 while it is still being downloaded.
-   */
-  uploadS3 () {
+  beginTailReadStream () {
     const file = createTailReadStream(this.path, {
       tail: true
     })
 
+    // Close the tailing read stream after downloading
+    // the source file is complete.
     this.writeStream.on('finish', () => {
       file.close()
     })
 
+    return file
+  }
+
+  /**
+   * Upload the file to S3 while it is still being downloaded.
+   */
+  uploadS3 () {
+    const file = this.beginTailReadStream()
     return this._uploadS3(file)
   }
 
@@ -555,9 +563,54 @@ class Uploader {
     })
   }
 
+  /**
+   * Upload a stream to B2 while it is still being downloaded.
+   */
   uploadB2 () {
-    this.b2Upload = null
-    throw new Error('not implemented')
+    if (!this.options.b2) {
+      this.emitError(new Error('The B2 client is not configured on this companion instance.'))
+      return
+    }
+
+    const filename = this.options.metadata.filename || path.basename(this.path)
+    const fileSize = this.options.size
+    const { client, options } = this.options.b2
+
+    if (!this._b2EndpointPool) {
+      this._b2EndpointPool = client.createEndpointPool(options.bucket)
+    }
+
+    const upload = client.upload({
+      bucketName: options.bucket,
+      path: this.path,
+      fileName: options.getPath(null, filename), // destination
+      fileSize, // expected final size of the file being transferred
+      stream: this.beginTailReadStream(),
+      endpointPool: this._b2EndpointPool
+    })
+
+    this.b2Upload = upload
+
+    upload.send((error, data) => {
+      if (error) {
+        this.emitError(error)
+      } else {
+        console.log('send complete', data)
+        this.emitSuccess('?', {
+          response: {
+            responseText: JSON.stringify(data),
+            headers: {
+              'content-type': 'application/json'
+            }
+          }
+        })
+      }
+      this.cleanUp()
+    })
+
+    upload.onUploadProgress = ({ loaded, total }) => {
+      this.emitProgress(loaded, total)
+    }
   }
 }
 
