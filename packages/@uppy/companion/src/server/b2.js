@@ -9,7 +9,7 @@ const B2Stream = require('./b2stream')
 
 function createBucketCache (client, cacheDuration = ms('30m')) {
   const cache = Object.create(null)
-  return (bucketName) => {
+  return ({ bucketName }) => {
     const match = cache[bucketName]
     if (match && match.expiration < Date.now()) {
       return match.result

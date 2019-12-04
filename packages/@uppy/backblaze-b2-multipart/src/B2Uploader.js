@@ -256,9 +256,18 @@ class B2Uploader {
    */
   _getPartSha1Sum (index) {
     const body = this.chunks[index]
-    return body.arrayBuffer()
-      .then(buffer => sha1(buffer))
-      .then(sha1sum => (this.chunkState[index].sha1 = sha1sum))
+    const hash = sha1.create()
+    const chunkState = this.chunkState[index]
+
+    return new Promise((resolve, reject) => {
+      const fileReader = new FileReader()
+      fileReader.onload = function (event) {
+        hash.update(event.target.result)
+        chunkState.sha1 = hash.hex()
+        resolve(chunkState.sha1)
+      }
+      fileReader.readAsArrayBuffer(body)
+    })
   }
 
   /**
