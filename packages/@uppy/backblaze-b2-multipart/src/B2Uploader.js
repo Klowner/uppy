@@ -342,10 +342,10 @@ class B2Uploader {
           partSha1Array
         })
       } else {
-        return {
+        return sha1Sums.then(contentSha1 => ({
           fileId: this.fileId,
-          contentSha1: sha1Sums
-        }
+          contentSha1
+        }))
       }
     }).then((result) => {
       this.options.onSuccess(result)
