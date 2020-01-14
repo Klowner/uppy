@@ -104,6 +104,7 @@ declare module Uppy {
     on<TMeta extends IndexedObject<any> = {}>(event: 'upload-success', callback: (file: UppyFile<TMeta>, body: any, uploadURL: string) => void): Uppy;
     on<TMeta extends IndexedObject<any> = {}>(event: 'complete', callback: (result: UploadResult<TMeta>) => void): Uppy;
     on(event: string, callback: (...args: any[]) => void): Uppy;
+    once(event: string, callback: (...args: any[]) => void): Uppy;
     off(event: string, callback: any): Uppy;
     /**
      * For use by plugins only!
