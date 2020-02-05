@@ -220,17 +220,27 @@ class B2Uploader {
       remove(this.uploading, ev.target)
       this.chunkState[index].busy = false
 
+      // Check for http error response
+      if (ev.target.status < 200 || ev.target.status >= 300) {
+        // If 503, then we need to retry this part.
+        // We've already set it to busy=false, so
+        // bailing out here means the part will eventually
+        // be retried. (Discard the endpoint)
+        if (ev.target.status === 503) {
+          this._uploadParts()
+          return
+        }
+
+        this._onError(new Error('Non 2xx'))
+        return
+      }
+
       // Grab the resulting fileId if this was a single part upload
       if (typeof this.fileId === 'undefined') {
         if (!ev.target.response || !ev.target.response.fileId) {
           this._onError(new Error('Failed to obtain fileId from upload response'))
         }
         this.fileId = ev.target.response.fileId
-      }
-
-      if (ev.target.status < 200 || ev.target.status >= 300) {
-        this._onError(new Error('Non 2xx'))
-        return
       }
 
       this._onPartProgress(index, body.size, body.size)
@@ -242,7 +252,6 @@ class B2Uploader {
       remove(this.uploading, ev.target)
       this.chunkState[index].busy = false
 
-      console.log(ev.target.response)
       const error = new Error('Unknown error')
       error.source = ev.target
       this._onError(error)
