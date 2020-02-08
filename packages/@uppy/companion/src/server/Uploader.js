@@ -233,7 +233,7 @@ class Uploader {
     }
 
     this.writeStream.write(chunk, () => {
-      logger.debug(`${this.bytesWritten} bytes`, 'uploader.download.progress', this.shortToken)
+      // TODO logger.debug(`${this.bytesWritten} bytes`, 'uploader.download.progress', this.shortToken)
       if (protocol === PROTOCOLS.multipart || protocol === PROTOCOLS.tus) {
         return this.emitIllusiveProgress()
       }
@@ -505,8 +505,6 @@ class Uploader {
     // Close the tailing read stream after downloading
     // the source file is complete.
     this.writeStream.on('finish', () => {
-      console.log('WRITE STREAM FINISHED, CLOSING TAIL')
-      console.log(file.close())
       file.close()
     })
 

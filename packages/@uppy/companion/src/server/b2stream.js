@@ -37,6 +37,7 @@ module.exports = class B2Stream {
       this.getBucketId(this.options.bucketName)
     ]).then(([chunkSize, bucketId]) => {
       const isMultipart = (chunkSize < this.options.fileSize)
+      console.log('SEND multipart?', isMultipart)
       if (isMultipart) {
         return this._sendMultipart({ chunkSize, bucketId })
       } else {
@@ -56,19 +57,25 @@ module.exports = class B2Stream {
       .then(({ data }) => data)
 
     const transmit = largeFile
-      .then(data => {
+      .then((startLargeFileResponse) => {
         const { stream, path, endpointPool } = this.options
         const { client } = this
+
+        const { fileId } = startLargeFileResponse
+        console.log('LARGE FILE RESPONSE', startLargeFileResponse)
 
         return new Promise((resolve, reject) => {
           const chunks = []
           const writerOptions = {
+            fileId,
+            fileName,
             client,
             endpointPool,
             chunkSize,
             path,
             // bucketId: this.options.bucketId,
             handleSent: chunk => {
+              console.log('SENT', chunk)
               chunks[chunk.id] = { hash: chunk.hash }
             }
           }
@@ -101,32 +108,30 @@ module.exports = class B2Stream {
     // b2_get_upload_url (bucketId) -> authorizationTokem, url
     // b2_upload_file (authorizationToken, url, hash)
     //
-    // console.log('SEND SINGLE')
     // return Promise.resolve({ done: true })
 
     const transmit = new Promise((resolve, reject) => {
-      const { stream, path, endpointPool } = this.options
+      const { stream, path, fileName, endpointPool } = this.options
       const { client } = this
       const chunks = []
 
       const writerOptions = {
+        fileName,
         client,
         endpointPool,
         chunkSize,
         path,
-        handleSent: chunk => {
+        handleSent: (chunk) => {
           chunks[chunk.id] = { hash: chunk.hash }
         }
       }
 
       try {
-        stream
-          .pipe(B2StreamWriter(writerOptions))
-          .on('end', () => {
-            // TODO -- verify successful upload!
-            resolve(chunks)
-          })
+        const writer = B2StreamWriter(writerOptions)
+        writer.on('finish', () => resolve(chunks))
+        stream.pipe(writer)
       } catch (err) {
+        console.log('STREAM ERROR', err)
         reject(err)
       }
     })
@@ -135,11 +140,23 @@ module.exports = class B2Stream {
   }
 }
 
-function B2StreamWriter ({ client, endpointPool, connections = 5, chunkSize, path, handleSent }) {
+function callWithRetry (fn, retriesLeft = 5) {
+  return fn()
+    .catch((err) => {
+      if (retriesLeft > 0) {
+        console.log('RETRYING', retriesLeft)
+        return callWithRetry(fn, retriesLeft - 1)
+      }
+      return Promise.reject(err)
+    })
+}
+
+function B2StreamWriter ({ client, endpointPool, connections = 5, chunkSize, path, handleSent, fileName, fileId = null }) {
   let accum = 0 // total bytes received
   let chunkAccum = 0 // total bytes in the current which have been processed
   // let sentAccum = 0 // total bytes transmitted to Backblaze
   let chunkCount = 0 // number of emitted chunks
+  const isMultipart = fileId !== null // fileId is only present when acquired via startLargeFile()
 
   // Create a new promise which will resolve to a fd-slicer instance
   const slicer = new Promise((resolve, reject) => {
@@ -177,12 +194,12 @@ function B2StreamWriter ({ client, endpointPool, connections = 5, chunkSize, pat
 
     const transmit = new Promise((resolve) => {
       console.log('requesting slicer')
+      // Create a new stream slice
       slicer.then(({ slicer }) => {
         // Create a new SHA1 hasher
         const hasher = crypto.createHash('sha1')
         hasher.setEncoding('hex')
 
-        console.log('slicin?', slicer)
         // Create a new read stream for this segment
         // and pipe it to the sha1 hasher.
         slicer.createReadStream({ start, end })
@@ -191,17 +208,59 @@ function B2StreamWriter ({ client, endpointPool, connections = 5, chunkSize, pat
             console.log('finished hashing chunk', id)
             resolve({
               hash: hasher.read(),
-              stream: slicer.createReadStream({ start, end })
+              createReadStream: () => slicer.createReadStream({ start, end }),
+              contentLength: end - start
             })
           })
           .pipe(hasher)
       })
-    }).then(({ hash, stream }) => {
-      if (handleSent) {
-        console.log('transmitted', id, hash)
-        handleSent({ id, hash })
-      }
-    }).then(response => {
+    }).then(({ hash, createReadStream, contentLength }) => {
+      return new Promise((resolve, reject) => {
+        // Acquire an endpoint, attempt transmitting a chunk,
+        // and finish by releasing the endpoint and calling
+        // handleSent() with the completed chunk.
+        const attemptChunkTransmission = () =>
+          endpointPool.acquire(fileId)
+            .then((endpoint) => {
+              let request
+              const { authorizationToken, uploadUrl } = endpoint
+              if (isMultipart) {
+                console.log(start, end, 'contentlength', contentLength)
+                request = client.uploadPart({
+                  partNumber: id,
+                  uploadUrl,
+                  uploadAuthToken: authorizationToken,
+                  data: createReadStream(),
+                  hash
+                  // contentLength,
+                })
+              } else {
+                request = client.uploadFile({
+                  uploadUrl,
+                  uploadAuthToken: authorizationToken,
+                  fileName,
+                  data: createReadStream(),
+                  hash,
+                  contentLength
+                })
+              }
+              // only release endpoint back to the pool if it was
+              // last used successfully.
+              request.then(() => endpointPool.release(endpoint))
+              return request
+            })
+
+        callWithRetry(attemptChunkTransmission)
+          .then(({ data }) => {
+            console.log('TRANSMISSION RESULT', data)
+            if (handleSent) {
+              handleSent({ id, hash })
+            }
+            return data
+          })
+          .then(resolve)
+      })
+    }).then(() => {
       // Transmission complete, remove this promise
       // from the array of worker chunk transmissions
       const index = workers.indexOf(transmit)
@@ -209,8 +268,6 @@ function B2StreamWriter ({ client, endpointPool, connections = 5, chunkSize, pat
 
       // Keep the stream moving
       pendingWriteDrain()
-
-      return response
     })
 
     // Push this transmission promise into the pending worker queue
@@ -230,13 +287,10 @@ function B2StreamWriter ({ client, endpointPool, connections = 5, chunkSize, pat
           emit(this)
         }
       }
-
-      console.log('write', chunk && chunk.length)
       // handle the callback (now or later)
       pendingWriteHandler(cb)
     },
     final: function (cb) {
-      console.log('final')
       emit(this)
 
       console.log('waiting on workers to complete', workers.length)
@@ -253,7 +307,10 @@ function B2StreamWriter ({ client, endpointPool, connections = 5, chunkSize, pat
             resolve(fd)
           })
         }))
-        .then(cb)
+        .then(() => {
+          console.log('writable final complete', cb)
+          cb()
+        })
     }
   })
 }

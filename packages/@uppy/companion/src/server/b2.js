@@ -1,15 +1,10 @@
 const B2 = require('backblaze-b2')
 const ms = require('ms')
-// const fs = require('fs')
-// const Transform = require('stream').Transform
-// const Writable = require('stream').Writable
-// const crypto = require('crypto')
-// const fdSlicer = require('fd-slicer')
 const B2Stream = require('./b2stream')
 
 function createBucketCache (client, cacheDuration = ms('30m')) {
   const cache = Object.create(null)
-  return ({ bucketName }) => {
+  return (bucketName) => {
     const match = cache[bucketName]
     if (match && match.expiration < Date.now()) {
       return match.result
@@ -42,7 +37,7 @@ function createEndpointPool (client, bucketName) {
       if (pool.length) {
         return Promise.resolve(pool.shift())
       } else {
-        return client.getCachedBucket({ bucketName })
+        return client.getCachedBucket(bucketName)
           .then(({ bucketId }) => client.getUploadUrl({ bucketId }))
           .then(({ data }) => data)
       }
@@ -167,6 +162,14 @@ module.exports = class B2Client {
 
   cancelLargeFile (params) {
     return this.request(() => this.b2.cancelLargeFile(params))
+  }
+
+  uploadFile (params) {
+    return this.request(() => this.b2.uploadFile(params))
+  }
+
+  uploadPart (params) {
+    return this.request(() => this.b2.uploadPart(params))
   }
 
   // The following methods are used by Companion server <-> server transfers
