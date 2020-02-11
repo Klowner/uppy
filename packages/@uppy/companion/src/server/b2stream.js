@@ -1,9 +1,27 @@
-const fdSlicer = require('fd-slicer')
-const crypto = require('crypto')
 const Writable = require('stream').Writable
+const crypto = require('crypto')
+const fdSlicer = require('fd-slicer')
 const fs = require('fs')
 
 const MAX_UPLOAD_PARTS = 10000
+
+function accumulator (start) {
+  let accum = start || 0
+  return (add = 0) => {
+    accum += add
+    return accum
+  }
+}
+
+function callWithRetry (fn, args = [], retriesLeft = 5) {
+  return fn(...args)
+    .catch((err) => {
+      if (retriesLeft > 0) {
+        return callWithRetry(fn, args, retriesLeft - 1)
+      }
+      return Promise.reject(err)
+    })
+}
 
 module.exports = class B2Stream {
   // bucketName
@@ -16,13 +34,18 @@ module.exports = class B2Stream {
   constructor (client, options) {
     this.options = options
     this.client = client
-    this.onUploadProgress = ({ loaded, total }) => {}
+    this.onUploadProgress = ({ total, loaded }) => {
+      console.log('progress', loaded / total)
+    }
   }
 
-  getOptimalChunkSize (fileSize) {
+  getOptimalPartSize (fileSize) {
     return this.client.preauth()
       .then(({ recommendedPartSize }) => {
-        return Math.max(recommendedPartSize, Math.ceil(fileSize / MAX_UPLOAD_PARTS))
+        return Math.min(
+          Math.max(recommendedPartSize, Math.ceil(fileSize / MAX_UPLOAD_PARTS)),
+          fileSize
+        )
       })
   }
 
@@ -33,133 +56,137 @@ module.exports = class B2Stream {
 
   send (cb) {
     return Promise.all([
-      this.getOptimalChunkSize(this.options.fileSize),
+      this.getOptimalPartSize(this.options.fileSize),
       this.getBucketId(this.options.bucketName)
-    ]).then(([chunkSize, bucketId]) => {
-      const isMultipart = (chunkSize < this.options.fileSize)
-      console.log('SEND multipart?', isMultipart)
+    ]).then(([partSize, bucketId]) => {
+      const fileSize = this.options.fileSize
+      const onUploadProgress = this.createProgressReporter(fileSize)
+      const isMultipart = (partSize < fileSize)
       if (isMultipart) {
-        return this._sendMultipart({ chunkSize, bucketId })
+        return this._sendMultipart(partSize, bucketId, onUploadProgress)
       } else {
-        return this._sendSingle({ chunkSize, bucketId })
+        return this._sendSingle(partSize, bucketId, onUploadProgress)
       }
     })
-      .catch(err => {
-        console.log('send error', err)
+      .catch((err) => {
         cb(err)
       })
-      .then(result => cb(null, result))
+      .then((result) => cb(null, result))
   }
 
-  _sendMultipart ({ chunkSize, bucketId }) {
-    const { fileName } = this.options
-    const largeFile = this.client.startLargeFile({ bucketId, fileName })
-      .then(({ data }) => data)
-
-    const transmit = largeFile
-      .then((startLargeFileResponse) => {
-        const { stream, path, endpointPool } = this.options
-        const { client } = this
-
-        const { fileId } = startLargeFileResponse
-        console.log('LARGE FILE RESPONSE', startLargeFileResponse)
-
-        return new Promise((resolve, reject) => {
-          const chunks = []
-          const writerOptions = {
-            fileId,
-            fileName,
-            client,
-            endpointPool,
-            chunkSize,
-            path,
-            // bucketId: this.options.bucketId,
-            handleSent: chunk => {
-              console.log('SENT', chunk)
-              chunks[chunk.id] = { hash: chunk.hash }
-            }
-          }
-
-          stream
-            .pipe(B2StreamWriter(writerOptions))
-            .on('end', () => {
-              // TODO -- verify successful upload!
-              resolve(chunks)
-            })
+  createProgressReporter (total) {
+    const sent = accumulator(0)
+    return {
+      send: (bytes) => {
+        this.onUploadProgress({
+          loaded: sent(bytes),
+          total
         })
-      })
-
-    const finish = transmit
-      .then(chunks => {
-        console.log('finishing', chunks)
-        return chunks
-      })
-
-    return finish
-    // b2_start_large_file (bucketId, fileName, contentType) -> fileId
-    // start streaming
-    //    b2_get_upload_part_url (fileId) -> authorizationToken, url
-    //    b2_upload_part (authorizationToken, url)
-    // finish
-    // b2_finish_large_file (fileId, partSha1Array)
+      }
+    }
   }
 
-  _sendSingle ({ chunkSize, bucketId }) {
-    // b2_get_upload_url (bucketId) -> authorizationTokem, url
-    // b2_upload_file (authorizationToken, url, hash)
-    //
-    // return Promise.resolve({ done: true })
-
-    const transmit = new Promise((resolve, reject) => {
-      const { stream, path, fileName, endpointPool } = this.options
+  _sendSingle (partSize, bucketId, progressReporter) {
+    const sendSinglePart = () => {
+      const { fileName, fileSize, stream, path, endpointPool } = this.options
       const { client } = this
       const chunks = []
-
+      let fileId
+      let data
       const writerOptions = {
+        fileId: null,
         fileName,
+        fileSize,
         client,
         endpointPool,
-        chunkSize,
+        partSize,
         path,
-        handleSent: (chunk) => {
+        progressReporter,
+        handleSent: (chunk, response) => {
+          chunks[chunk.id] = { hash: chunk.hash }
+          data = response
+          fileId = response.fileId
+        }
+      }
+
+      return new Promise((resolve, reject) => {
+        try {
+          const writer = B2StreamWriter(writerOptions)
+          stream.pipe(writer)
+          writer.on('finish', () => {
+            resolve({ chunks, fileId, data })
+          })
+        } catch (err) {
+          reject(err)
+        }
+      })
+    }
+
+    return callWithRetry(sendSinglePart)
+  }
+
+  _sendMultipart (partSize, bucketId, progressReporter) {
+    const sendMultipartStartLargeFile = () => {
+      const { fileName } = this.options
+      return this.client.startLargeFile({ bucketId, fileName })
+        .then(({ data }) => data)
+    }
+
+    const sendMultipartUploadParts = (startLargeFileResponse) => {
+      const { fileName, fileSize, stream, path, endpointPool } = this.options
+      const { client } = this
+      const { fileId } = startLargeFileResponse
+      const chunks = []
+      const writerOptions = {
+        fileId,
+        fileName,
+        fileSize,
+        client,
+        endpointPool,
+        partSize,
+        path,
+        progressReporter,
+        handleSent: (chunk, response) => {
           chunks[chunk.id] = { hash: chunk.hash }
         }
       }
 
-      try {
-        const writer = B2StreamWriter(writerOptions)
-        writer.on('finish', () => resolve(chunks))
-        stream.pipe(writer)
-      } catch (err) {
-        console.log('STREAM ERROR', err)
-        reject(err)
-      }
-    })
+      return new Promise((resolve, reject) => {
+        try {
+          const writer = B2StreamWriter(writerOptions)
+          stream.pipe(writer)
+          writer.on('finish', () => {
+            resolve({ chunks, fileId })
+          })
+        } catch (err) {
+          reject(err)
+        }
+      })
+    }
 
-    return transmit
+    const sendMultipartFinishLargeFile = (uploadStartResult, uploadPartsResult) => {
+      const { chunks, fileId } = uploadPartsResult
+      const partSha1Array = chunks.map(({ hash }) => hash)
+      return this.client.finishLargeFile({ fileId, partSha1Array })
+        .then(({ data }) => ({
+          chunks,
+          data,
+          fileId
+        }))
+    }
+
+    return callWithRetry(sendMultipartStartLargeFile)
+      .then((startResult) => sendMultipartUploadParts(startResult)
+        .then((partsResult) => callWithRetry(sendMultipartFinishLargeFile, [startResult, partsResult]))
+      )
+      .catch((err) => {
+        throw err
+      })
   }
 }
 
-function callWithRetry (fn, retriesLeft = 5) {
-  return fn()
-    .catch((err) => {
-      if (retriesLeft > 0) {
-        console.log('RETRYING', retriesLeft)
-        return callWithRetry(fn, retriesLeft - 1)
-      }
-      return Promise.reject(err)
-    })
-}
-
-function B2StreamWriter ({ client, endpointPool, connections = 5, chunkSize, path, handleSent, fileName, fileId = null }) {
-  let accum = 0 // total bytes received
-  let chunkAccum = 0 // total bytes in the current which have been processed
-  // let sentAccum = 0 // total bytes transmitted to Backblaze
-  let chunkCount = 0 // number of emitted chunks
-  const isMultipart = fileId !== null // fileId is only present when acquired via startLargeFile()
-
-  // Create a new promise which will resolve to a fd-slicer instance
-  const slicer = new Promise((resolve, reject) => {
+function createSlicerFromPath (path) {
+  return new Promise((resolve, reject) => {
     fs.open(path, 'r', (err, fd) => {
       if (err) {
         reject(err)
@@ -168,106 +195,131 @@ function B2StreamWriter ({ client, endpointPool, connections = 5, chunkSize, pat
       resolve({ slicer, fd })
     })
   })
+}
 
+function createStreamHashSHA1 (slicer, start, end) {
+  const hasher = crypto.createHash('sha1')
+  hasher.setEncoding('hex')
+
+  return new Promise((resolve, reject) => {
+    slicer.createReadStream({ start, end })
+      .on('end', () => {
+        hasher.end()
+        const hash = hasher.read()
+        resolve(hash)
+      })
+      .pipe(hasher)
+  })
+}
+
+function closeFileDescriptorAsync (fd) {
+  return new Promise((resolve, reject) => {
+    fs.close(fd, (err) => {
+      if (err) {
+        reject(err)
+        return
+      }
+      resolve(fd)
+    })
+  })
+}
+
+function B2StreamWriter (options) {
+  const { fileName, fileSize, partSize, path, endpointPool, fileId, client, progressReporter } = options
+  const { connections = 3 } = options
+  const isMultipart = !!fileId // fileId is present when first obtained via startLargeFile()
+  const fdSlicer = createSlicerFromPath(path)
   const workers = []
   const queue = []
 
+  let bytesRead = 0 // total bytes received
+  let partAccum = 0 // total bytes in the current part which have been processed
+  let partCount = 0 // number of emitted parts
+
   const pendingWriteDrain = () => {
-    // If we have pending onwrite()s queued and we're under the maximum
-    // number of transmit workers...
+    // If we have pending onwrite()s queued and we're under the maximum number
+    // of transmit workers...
     if (queue.length && workers.length < connections) {
       const cb = queue.shift()
-      return cb() // signal that we're ready for more data
+      cb() // signal that we're ready for more data
     }
   }
 
   const pendingWriteHandler = (onwrite) => {
     queue.push(onwrite)
-    return pendingWriteDrain()
+    pendingWriteDrain()
   }
 
-  const emit = (stream) => {
-    const start = accum - chunkAccum
-    const end = accum
-    const id = chunkCount++
-    chunkAccum = 0
+  const emitPart = (writableStream) => {
+    // start and end correspond to the partAccum length section of bytes at the
+    // tail of the read stream.
+    const start = bytesRead - partAccum
+    const end = bytesRead
+    const id = partCount++
+    const contentLength = end - start
+    partAccum = 0
 
-    const transmit = new Promise((resolve) => {
-      console.log('requesting slicer')
-      // Create a new stream slice
-      slicer.then(({ slicer }) => {
-        // Create a new SHA1 hasher
-        const hasher = crypto.createHash('sha1')
-        hasher.setEncoding('hex')
-
-        // Create a new read stream for this segment
-        // and pipe it to the sha1 hasher.
-        slicer.createReadStream({ start, end })
-          .on('end', () => {
-            hasher.end()
-            console.log('finished hashing chunk', id)
-            resolve({
-              hash: hasher.read(),
-              createReadStream: () => slicer.createReadStream({ start, end }),
-              contentLength: end - start
-            })
-          })
-          .pipe(hasher)
+    // Create a stream slice of this part's range and run it through hasher.
+    const partHashResult = () =>
+      fdSlicer.then(({ slicer }) => {
+        return createStreamHashSHA1(slicer, start, end)
       })
-    }).then(({ hash, createReadStream, contentLength }) => {
-      return new Promise((resolve, reject) => {
-        // Acquire an endpoint, attempt transmitting a chunk,
-        // and finish by releasing the endpoint and calling
-        // handleSent() with the completed chunk.
-        const attemptChunkTransmission = () =>
-          endpointPool.acquire(fileId)
-            .then((endpoint) => {
-              let request
-              const { authorizationToken, uploadUrl } = endpoint
-              if (isMultipart) {
-                console.log(start, end, 'contentlength', contentLength)
-                request = client.uploadPart({
-                  partNumber: id,
-                  uploadUrl,
-                  uploadAuthToken: authorizationToken,
-                  data: createReadStream(),
-                  hash
-                  // contentLength,
-                })
-              } else {
-                request = client.uploadFile({
-                  uploadUrl,
-                  uploadAuthToken: authorizationToken,
-                  fileName,
-                  data: createReadStream(),
-                  hash,
-                  contentLength
-                })
-              }
-              // only release endpoint back to the pool if it was
-              // last used successfully.
-              request.then(() => endpointPool.release(endpoint))
-              return request
-            })
 
-        callWithRetry(attemptChunkTransmission)
-          .then(({ data }) => {
-            console.log('TRANSMISSION RESULT', data)
-            if (handleSent) {
-              handleSent({ id, hash })
-            }
-            return data
-          })
-          .then(resolve)
-      })
-    }).then(() => {
-      // Transmission complete, remove this promise
-      // from the array of worker chunk transmissions
+    // Attempt transmitting the stream data for this part to the
+    // appropriate B2 endpoint.
+    const attemptPartTransmission = (hash, slicer) => {
+      return endpointPool.acquire(fileId)
+        .then((endpoint) => {
+          const { authorizationToken, uploadUrl } = endpoint
+          const partStream = slicer.createReadStream({ start, end })
+          let transmit = null
+          if (isMultipart) {
+            transmit = client.uploadPart({
+              uploadUrl,
+              uploadAuthToken: authorizationToken,
+              data: partStream,
+              hash,
+              contentLength,
+              partNumber: id + 1 // b2 part numbers start a 1
+            })
+          } else {
+            transmit = client.uploadFile({
+              uploadUrl,
+              uploadAuthToken: authorizationToken,
+              fileName,
+              data: partStream,
+              hash,
+              contentLength
+            })
+          }
+          // only release endpoint back to the pool if it was last used
+          // successfully.
+          transmit.then(() => endpointPool.release(endpoint))
+          transmit.catch(() => { partStream.destroy() })
+          return transmit
+        })
+    }
+
+    const transmit = Promise.all([
+      partHashResult(),
+      fdSlicer
+    ]).then(([hash, { slicer }]) =>
+      callWithRetry(attemptPartTransmission, [hash, slicer])
+        .then(({ data }) => {
+          if (options.handleSent) {
+            options.handleSent({ id, hash }, data)
+          }
+          return data
+        })
+    ).then((data) => {
+      // After a successful transmission, remove this
+      // part transmission promise from the worker array
       const index = workers.indexOf(transmit)
       workers.splice(index, 1)
 
       // Keep the stream moving
       pendingWriteDrain()
+      return data
     })
 
     // Push this transmission promise into the pending worker queue
@@ -275,40 +327,46 @@ function B2StreamWriter ({ client, endpointPool, connections = 5, chunkSize, pat
     return transmit
   }
 
+  let handledCounter = 0
+
   return new Writable({
-    write: function (chunk, enc, cb) {
-      let remaining = chunk.length
+    write: function (chunk, _, cb) {
+      const chunkLength = chunk.length
+      let remaining = chunkLength
       while (remaining > 0) {
-        const maxRead = Math.min(remaining, chunkSize - chunkAccum)
+        const maxRead = Math.min(remaining, partSize - partAccum)
         remaining -= maxRead
-        chunkAccum += maxRead
-        accum += maxRead
-        if (chunkAccum === chunkSize) {
-          emit(this)
+        partAccum += maxRead
+        bytesRead += maxRead
+        // If we've received an entire part worth of data, then
+        // we will emit a new transmit job
+        if (partAccum === partSize) {
+          emitPart(this)
         }
       }
+
       // handle the callback (now or later)
-      pendingWriteHandler(cb)
+      pendingWriteHandler(() => {
+        progressReporter.send(chunkLength)
+        handledCounter += chunkLength
+        cb()
+        // Sometimes when the file is very small, the read stream end event
+        // must occur before the pipe begins? This ensures we wrap up once
+        // we've processed all the bytes we've been expecting.
+        if (handledCounter === fileSize) {
+          this.end()
+        }
+      })
     },
     final: function (cb) {
-      emit(this)
-
-      console.log('waiting on workers to complete', workers.length)
-
+      if (partAccum > 0) {
+        emitPart(this)
+      }
+      // Wait on all workers to finish
       Promise.all(workers)
-        .then(() => slicer)
-        .then(({ fd }) => new Promise((resolve, reject) => {
-          fs.close(fd, (err) => {
-            if (err) {
-              reject(err)
-              return
-            }
-            console.log('closed fd', fd)
-            resolve(fd)
-          })
-        }))
-        .then(() => {
-          console.log('writable final complete', cb)
+        .then(() => fdSlicer.then(({ fd }) => fd))
+        .then((fd) => closeFileDescriptorAsync(fd))
+        .then((fd) => {
           cb()
         })
     }

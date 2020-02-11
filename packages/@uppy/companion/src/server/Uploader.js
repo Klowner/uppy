@@ -233,7 +233,7 @@ class Uploader {
     }
 
     this.writeStream.write(chunk, () => {
-      // TODO logger.debug(`${this.bytesWritten} bytes`, 'uploader.download.progress', this.shortToken)
+      // logger.debug(`${this.bytesWritten} bytes`, 'uploader.download.progress', this.shortToken)
       if (protocol === PROTOCOLS.multipart || protocol === PROTOCOLS.tus) {
         return this.emitIllusiveProgress()
       }
@@ -496,10 +496,9 @@ class Uploader {
     })
   }
 
-  beginTailReadStream (end) {
+  beginTailReadStream () {
     const file = createTailReadStream(this.path, {
-      tail: true,
-      end: end
+      tail: true
     })
 
     // Close the tailing read stream after downloading
@@ -572,7 +571,6 @@ class Uploader {
       this.emitError(new Error('The B2 client is not configured on this companion instance.'))
       return
     }
-
     const filename = this.options.metadata.filename || path.basename(this.path)
     const fileSize = this.options.size
     const { client, options } = this.options.b2
@@ -586,17 +584,21 @@ class Uploader {
       path: this.path,
       fileName: options.getPath(null, filename), // destination
       fileSize, // expected final size of the file being transferred
-      stream: this.beginTailReadStream(fileSize),
+      stream: this.beginTailReadStream(),
       endpointPool: this._b2EndpointPool
     })
 
     this.b2Upload = upload
 
+    upload.onUploadProgress = ({ loaded, total }) => {
+      this.emitProgress(loaded, total)
+    }
+
     upload.send((error, data) => {
+      this.b2Upload = null
       if (error) {
         this.emitError(error)
       } else {
-        console.log('send complete', data)
         this.emitSuccess('?', {
           response: {
             responseText: JSON.stringify(data),
@@ -608,10 +610,6 @@ class Uploader {
       }
       this.cleanUp()
     })
-
-    upload.onUploadProgress = ({ loaded, total }) => {
-      this.emitProgress(loaded, total)
-    }
   }
 }
 
